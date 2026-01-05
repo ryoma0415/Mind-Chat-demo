@@ -58,9 +58,9 @@ pip install -r requirements.txt
 2. 別ファイル名や別ディレクトリを使う場合は環境変数 `MINDCHAT_MODEL_PATH` にフルパスを指定してください。
 
 ### 音声認識モデルの準備（音声入力を使う場合）
-1. Vosk の日本語モデル（例: `vosk-model-small-ja-0.22`）をダウンロードして解凍します。  
+1. Vosk の日本語モデル（例: `vosk-model-ja-0.22`）をダウンロードして解凍します。  
    https://alphacephei.com/vosk/models から入手できます。
-2. 解凍したフォルダを `model/vosk-model-small-ja-0.22/` のように配置するか、環境変数 `MINDCHAT_SPEECH_MODEL_PATH` にモデルディレクトリのフルパスを指定します。
+2. 解凍したフォルダを `model/vosk-model-ja-0.22/` のように配置するか、環境変数 `MINDCHAT_SPEECH_MODEL_PATH` にモデルディレクトリのフルパスを指定します。
 3. `vosk` がインストールされていない場合は `pip install vosk` を実行してください。
 
 ## メディアアセット

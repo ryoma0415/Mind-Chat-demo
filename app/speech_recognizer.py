@@ -26,7 +26,7 @@ class SpeechRecognizer:
 
     def __init__(self, config: AppConfig):
         model_override = os.getenv("MINDCHAT_SPEECH_MODEL_PATH")
-        default_model_dir = config.paths.model_dir / "vosk-model-small-ja-0.22"
+        default_model_dir = config.paths.model_dir / "vosk-model-ja-0.22"
         self._model_path = Path(model_override).expanduser().resolve() if model_override else default_model_dir
         self._model: object | None = None
         self._lock = threading.Lock()

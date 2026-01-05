@@ -18,6 +18,7 @@ venv/
 
 # 大きなモデルファイルは Git に載せない
 model/
+logic/
 dist/
 *.spec
 build/
