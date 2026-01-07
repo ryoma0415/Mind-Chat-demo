@@ -15,7 +15,7 @@ class AudioRecorder(QObject):
     Captures raw PCM audio into memory and emits the byte stream when stopped.
     """
 
-    audio_ready = Signal(object)  # emits tuple[bytes, int] = (pcm, sample_rate)
+    audio_ready = Signal(object)  # emits tuple[bytes, int, int, str] = (pcm, rate, channels, format)
     recording_started = Signal()
     recording_stopped = Signal(str)
     error = Signal(str)
@@ -35,6 +35,7 @@ class AudioRecorder(QObject):
         self._sample_rate = 16_000
         self._channels = 1
         self._bytes_per_sample = 2
+        self._sample_format = QAudioFormat.SampleFormat.Int16
         self._silence_threshold = silence_threshold
         self._silence_timeout_ms = silence_timeout_ms
         self._silence_detection_enabled = silence_timeout_ms > 0
@@ -77,6 +78,7 @@ class AudioRecorder(QObject):
 
         self._sample_rate = target_format.sampleRate()
         self._channels = target_format.channelCount() or 1
+        self._sample_format = target_format.sampleFormat()
         frame_bytes = target_format.bytesForFrames(1)
         self._bytes_per_sample = max(1, int(frame_bytes / max(1, self._channels)))
 
@@ -123,7 +125,9 @@ class AudioRecorder(QObject):
         if not data:
             self.error.emit("録音データが空でした。マイクの接続を確認してください。")
             return
-        self.audio_ready.emit((data, self._sample_rate))
+        self.audio_ready.emit(
+            (data, self._sample_rate, self._channels, self._format_label(self._sample_format))
+        )
 
     # Internal helpers ---------------------------------------------------
     def _handle_ready_read(self) -> None:
@@ -165,6 +169,18 @@ class AudioRecorder(QObject):
         threshold = self._silence_threshold
         if any(abs(sample) > threshold for sample in samples):
             self._last_voice_time = time.monotonic()
+
+    @staticmethod
+    def _format_label(sample_format: QAudioFormat.SampleFormat) -> str:
+        if sample_format == QAudioFormat.SampleFormat.Int16:
+            return "int16"
+        if sample_format == QAudioFormat.SampleFormat.Int32:
+            return "int32"
+        if sample_format == QAudioFormat.SampleFormat.UInt8:
+            return "uint8"
+        if sample_format == QAudioFormat.SampleFormat.Float:
+            return "float32"
+        return "unknown"
 
     def _cleanup(self) -> None:
         self._buffer.clear()

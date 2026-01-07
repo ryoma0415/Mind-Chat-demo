@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -16,16 +17,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..counseling.topic_router import CounselingTopicRouter, TopicState, TopicUpdate
 from ..config import AppConfig, ConversationMode
 from ..history import FavoriteLimitError, HistoryError, HistoryManager
 from ..llm_client import LocalLLM
 from ..models import ChatMessage, Conversation
 from ..resources import resource_path
+from ..settings import get_str_setting
 from ..speech_recognizer import SpeechRecognizer
+from ..voicevox_client import DEFAULT_VOICEVOX_URL, VoiceVoxClient, sanitize_voice_text
 from .conversation_widget import ConversationWidget
 from .history_panel import HistoryPanel
 from .audio_recorder import AudioRecorder
-from .workers import LLMWorker, SpeechWorker
+from .voice_player import VoicePlayer
+from .workers import LLMWorker, SpeechWorker, VoiceVoxWorker
 
 
 MEDIA_EXTENSIONS = {
@@ -34,6 +39,7 @@ MEDIA_EXTENSIONS = {
 }
 
 logger = logging.getLogger(__name__)
+TOPIC_DEBUG_ENV = "MINDCHAT_DEBUG_TOPICS"
 
 
 class MainWindow(QMainWindow):
@@ -65,12 +71,27 @@ class MainWindow(QMainWindow):
             # モデルが無い環境でも起動だけはできるようにエラーメッセージを保持する
             self._llm_error = str(exc)
 
+        self._topic_router = CounselingTopicRouter(config)
+
         self._worker_thread: QThread | None = None
         self._worker: LLMWorker | None = None
         self._speech_thread: QThread | None = None
         self._speech_worker: SpeechWorker | None = None
         self._speech_recognizer = SpeechRecognizer(config)
         self._audio_recorder = AudioRecorder(self)
+        voicevox_url = get_str_setting(
+            config.settings, "voicevox.base_url", DEFAULT_VOICEVOX_URL
+        )
+        self._voice_client = VoiceVoxClient(voicevox_url)
+        self._voice_player = VoicePlayer(self)
+        self._voice_player.error.connect(self._handle_voice_player_error)
+        self._voice_thread: QThread | None = None
+        self._voice_worker: VoiceVoxWorker | None = None
+        self._voice_enabled = False
+        self._voice_speaker_id = 14
+        self._voice_request_id = 0
+        self._pending_voice_request: tuple[str, int] | None = None
+        self._voice_error_shown = False
         self._is_llm_busy = False
         self._is_recording = False
 
@@ -80,6 +101,10 @@ class MainWindow(QMainWindow):
         self._history_panel.set_mode_label(self._active_mode.display_name)
         self._conversation_widget = ConversationWidget(self)
         self._apply_assistant_label()
+        self._conversation_widget.set_voice_enabled(self._voice_enabled)
+        self._conversation_widget.set_voice_speaker_id(self._voice_speaker_id)
+        self._conversation_widget.voice_enabled_changed.connect(self._handle_voice_enabled_changed)
+        self._conversation_widget.voice_speaker_changed.connect(self._handle_voice_speaker_changed)
         self._conversation_widget.record_button_clicked.connect(self._toggle_recording)
         self._update_media_display()
 
@@ -257,10 +282,28 @@ class MainWindow(QMainWindow):
             # すでに別レスポンスを計算中ならキューを増やさずに無視
             return
 
+        topic_router = None
+        topic_state = None
+        if self._active_mode.key == "mind_chat":
+            topic_router = self._topic_router
+            topic_state = TopicState(
+                scores=dict(conversation.topic_scores),
+                selected_topic=conversation.topic_selected,
+                turns=conversation.topic_turns,
+            )
+            self._debug_topic_state(
+                "before_request",
+                topic_state.scores,
+                topic_state.selected_topic,
+                topic_state.turns,
+            )
+
         self._worker = LLMWorker(
             self._llm_client,
             conversation.messages,
             self._active_mode.system_prompt,
+            topic_router=topic_router,
+            topic_state=topic_state,
         )
         self._worker_thread = QThread(self)
 
@@ -278,7 +321,7 @@ class MainWindow(QMainWindow):
 
         self._worker_thread.start()
 
-    def _handle_llm_success(self, response: str) -> None:
+    def _handle_llm_success(self, response: str, topic_update: TopicUpdate | None) -> None:
         conversation_id = self._get_active_conversation_id()
         if not conversation_id:
             self._set_busy(False)
@@ -287,9 +330,12 @@ class MainWindow(QMainWindow):
             assistant_message = ChatMessage(role="assistant", content=response)
             conversation = self._active_history.append_message(conversation_id, assistant_message)
             self._set_active_conversation_id(conversation.conversation_id)
+            if topic_update:
+                self._apply_topic_update(conversation_id, topic_update)
             # リサイズ等で transcript が崩れても履歴から再描画して確実に反映する
             self._conversation_widget.display_conversation(conversation)
             self._refresh_history_panel(select_id=conversation.conversation_id)
+            self._queue_voice_output(response)
         except Exception as exc:  # pragma: no cover - UI robustness
             logger.exception("Failed to render assistant response", exc_info=exc)
             self._show_warning(
@@ -298,6 +344,30 @@ class MainWindow(QMainWindow):
             )
         finally:
             self._set_busy(False)
+
+    def _apply_topic_update(self, conversation_id: str, topic_update: TopicUpdate) -> None:
+        self._debug_topic_state(
+            "update",
+            topic_update.scores,
+            topic_update.selected_topic,
+            topic_update.turns,
+        )
+        try:
+            updated = self._active_history.update_topic_state(
+                conversation_id,
+                topic_scores=topic_update.scores,
+                topic_selected=topic_update.selected_topic,
+                topic_turns=topic_update.turns,
+            )
+        except HistoryError as exc:
+            logger.warning("Failed to persist topic state: %s", exc)
+            return
+        self._debug_topic_state(
+            "persisted",
+            updated.topic_scores,
+            updated.topic_selected,
+            updated.topic_turns,
+        )
 
     def _handle_llm_failure(self, error_message: str) -> None:
         try:
@@ -338,23 +408,40 @@ class MainWindow(QMainWindow):
         self._show_warning("録音エラー", message)
 
     def _handle_audio_ready(self, payload: object) -> None:
-        if not isinstance(payload, tuple) or len(payload) != 2:
+        if not isinstance(payload, tuple):
             return
-        pcm_bytes, sample_rate = payload
+        if len(payload) == 2:
+            pcm_bytes, sample_rate = payload
+            channels = 1
+            sample_format = "int16"
+        elif len(payload) == 4:
+            pcm_bytes, sample_rate, channels, sample_format = payload
+        else:
+            return
         try:
             pcm_bytes = bytes(pcm_bytes)  # type: ignore[arg-type]
             sample_rate_int = int(sample_rate)
+            channels_int = int(channels)
+            sample_format_text = str(sample_format)
         except Exception:
             return
 
         self._conversation_widget.set_status_text("音声を解析しています...")
-        self._start_speech_worker(pcm_bytes, sample_rate_int)
+        self._start_speech_worker(pcm_bytes, sample_rate_int, channels_int, sample_format_text)
 
-    def _start_speech_worker(self, pcm_bytes: bytes, sample_rate: int) -> None:
+    def _start_speech_worker(
+        self,
+        pcm_bytes: bytes,
+        sample_rate: int,
+        channels: int,
+        sample_format: str,
+    ) -> None:
         if self._speech_thread and self._speech_thread.isRunning():
             return
 
-        self._speech_worker = SpeechWorker(self._speech_recognizer, pcm_bytes, sample_rate)
+        self._speech_worker = SpeechWorker(
+            self._speech_recognizer, pcm_bytes, sample_rate, channels, sample_format
+        )
         self._speech_thread = QThread(self)
 
         self._speech_worker.moveToThread(self._speech_thread)
@@ -389,6 +476,88 @@ class MainWindow(QMainWindow):
         if not self._is_llm_busy and not self._is_recording:
             self._conversation_widget.set_status_text("")
 
+    # Voice output coordination ----------------------------------------
+    def _handle_voice_enabled_changed(self, enabled: bool) -> None:
+        self._voice_enabled = enabled
+        if enabled:
+            self._voice_error_shown = False
+            return
+        self._pending_voice_request = None
+        self._voice_request_id += 1
+        self._voice_player.stop()
+
+    def _handle_voice_speaker_changed(self, speaker_id: int) -> None:
+        self._voice_speaker_id = speaker_id
+
+    def _queue_voice_output(self, text: str) -> None:
+        if not self._voice_enabled:
+            return
+        cleaned = sanitize_voice_text(text)
+        if not cleaned:
+            return
+
+        self._voice_request_id += 1
+        request_id = self._voice_request_id
+        self._pending_voice_request = (cleaned, request_id)
+        self._voice_player.stop()
+
+        if self._voice_thread and self._voice_thread.isRunning():
+            return
+        self._start_pending_voice_request()
+
+    def _start_pending_voice_request(self) -> None:
+        if not self._pending_voice_request:
+            return
+        if self._voice_thread and self._voice_thread.isRunning():
+            return
+
+        text, request_id = self._pending_voice_request
+        self._pending_voice_request = None
+
+        self._voice_worker = VoiceVoxWorker(self._voice_client, text, self._voice_speaker_id, request_id)
+        self._voice_thread = QThread(self)
+
+        self._voice_worker.moveToThread(self._voice_thread)
+        self._voice_thread.started.connect(self._voice_worker.run)
+        self._voice_worker.finished.connect(self._handle_voice_success)
+        self._voice_worker.failed.connect(self._handle_voice_failure)
+        self._voice_worker.finished.connect(self._voice_thread.quit)
+        self._voice_worker.failed.connect(self._voice_thread.quit)
+        self._voice_worker.finished.connect(self._voice_worker.deleteLater)
+        self._voice_worker.failed.connect(self._voice_worker.deleteLater)
+        self._voice_thread.finished.connect(self._voice_thread.deleteLater)
+        self._voice_thread.finished.connect(self._on_voice_thread_finished)
+
+        self._voice_thread.start()
+
+    def _handle_voice_success(self, audio: object, request_id: int) -> None:
+        if not self._voice_enabled:
+            return
+        if request_id != self._voice_request_id:
+            return
+        if not isinstance(audio, (bytes, bytearray)):
+            return
+        self._voice_player.play_bytes(bytes(audio))
+
+    def _handle_voice_failure(self, error_message: str, request_id: int) -> None:
+        if not self._voice_enabled:
+            return
+        if request_id != self._voice_request_id:
+            return
+        if not self._voice_error_shown:
+            self._voice_error_shown = True
+            self._show_warning("音声出力に失敗しました", error_message)
+
+    def _handle_voice_player_error(self, message: str) -> None:
+        if not self._voice_error_shown:
+            self._voice_error_shown = True
+            self._show_warning("音声再生に失敗しました", message)
+
+    def _on_voice_thread_finished(self) -> None:
+        self._voice_worker = None
+        self._voice_thread = None
+        self._start_pending_voice_request()
+
     # Helpers ------------------------------------------------------------
     def _refresh_history_panel(self, select_id: Optional[str] = None) -> None:
         conversations = self._active_history.list_conversations()
@@ -419,6 +588,20 @@ class MainWindow(QMainWindow):
             self._set_active_conversation_id(target_id)
         else:
             self._set_active_conversation_id(None) # 念のため
+
+    def _debug_topic_state(
+        self,
+        label: str,
+        scores: dict[str, float],
+        selected: str | None,
+        turns: int,
+    ) -> None:
+        if not os.getenv(TOPIC_DEBUG_ENV):
+            return
+        print(
+            f"[topic-debug] {label} scores={scores} selected={selected} turns={turns}",
+            flush=True,
+        )
 
 
     def _set_busy(self, is_busy: bool, status_text: str | None = None) -> None:
@@ -575,8 +758,12 @@ class MainWindow(QMainWindow):
         if self._speech_thread and self._speech_thread.isRunning():
             self._speech_thread.quit()
             self._speech_thread.wait()
+        if self._voice_thread and self._voice_thread.isRunning():
+            self._voice_thread.quit()
+            self._voice_thread.wait()
         if self._audio_recorder.is_recording:
             self._audio_recorder.stop()
+        self._voice_player.stop()
         super().closeEvent(event)
 
     def _show_warning(self, title: str, message: str) -> None:

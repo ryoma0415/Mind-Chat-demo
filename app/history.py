@@ -99,6 +99,23 @@ class HistoryManager:
         self._conversations.remove(conversation)
         self._persist()
 
+    def update_topic_state(
+        self,
+        conversation_id: str,
+        topic_scores: dict[str, float] | None = None,
+        topic_selected: str | None = None,
+        topic_turns: int | None = None,
+    ) -> Conversation:
+        conversation = self.get_conversation(conversation_id)
+        if topic_scores is not None:
+            conversation.topic_scores = dict(topic_scores)
+        if topic_selected is not None:
+            conversation.topic_selected = topic_selected
+        if topic_turns is not None:
+            conversation.topic_turns = topic_turns
+        self._persist()
+        return conversation
+
     @property
     def favorite_count(self) -> int:
         return sum(1 for c in self._conversations if c.is_favorite)

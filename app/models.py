@@ -44,6 +44,9 @@ class Conversation:
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     messages: list[ChatMessage] = field(default_factory=list)
+    topic_scores: dict[str, float] = field(default_factory=dict)
+    topic_selected: str | None = None
+    topic_turns: int = 0
 
     def append_message(self, message: ChatMessage) -> None:
         self.messages.append(message)
@@ -64,11 +67,31 @@ class Conversation:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "messages": [message.to_dict() for message in self.messages],
+            "topic_scores": self.topic_scores,
+            "topic_selected": self.topic_selected,
+            "topic_turns": self.topic_turns,
         }
 
     @classmethod
     def from_dict(cls, payload: dict) -> "Conversation":
         messages = [ChatMessage.from_dict(m) for m in payload.get("messages", [])]
+        raw_scores = payload.get("topic_scores", {})
+        topic_scores: dict[str, float] = {}
+        if isinstance(raw_scores, dict):
+            for key, value in raw_scores.items():
+                if not isinstance(key, str):
+                    continue
+                try:
+                    topic_scores[key] = float(value)
+                except (TypeError, ValueError):
+                    continue
+        topic_selected = payload.get("topic_selected")
+        if not isinstance(topic_selected, str):
+            topic_selected = None
+        try:
+            topic_turns = int(payload.get("topic_turns", 0))
+        except (TypeError, ValueError):
+            topic_turns = 0
         return cls(
             conversation_id=payload["conversation_id"],
             title=payload.get("title", "新しい相談"),
@@ -76,6 +99,9 @@ class Conversation:
             created_at=payload.get("created_at", utc_now_iso()),
             updated_at=payload.get("updated_at", utc_now_iso()),
             messages=messages,
+            topic_scores=topic_scores,
+            topic_selected=topic_selected,
+            topic_turns=topic_turns,
         )
 
     @staticmethod

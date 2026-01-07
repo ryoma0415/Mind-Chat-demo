@@ -22,3 +22,6 @@ logic/
 dist/
 *.spec
 build/
+
+# Local VOICEVOX test project
+VOICEVOX_test/

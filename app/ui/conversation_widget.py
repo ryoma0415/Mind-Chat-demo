@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QTextCursor, QFont
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QCheckBox,
     QLabel,
     QPlainTextEdit,
     QPushButton,
@@ -30,6 +31,8 @@ from .media_display import MediaDisplayWidget
 class ConversationWidget(QWidget):
     message_submitted = Signal(str)
     record_button_clicked = Signal()
+    voice_enabled_changed = Signal(bool)
+    voice_speaker_changed = Signal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -108,10 +111,30 @@ class ConversationWidget(QWidget):
         self._send_button = QPushButton("送信", self)
         self._send_button.clicked.connect(self._handle_submit)
 
+        self._voice_toggle = QCheckBox("音声出力", self)
+        self._voice_toggle.setChecked(False)
+        self._voice_toggle.toggled.connect(self._handle_voice_toggle)
+
+        self._voice_combo = QComboBox(self)
+        self._voice_combo.addItem("VOICEVOX: 冥鳴ひまり", 14)
+        self._voice_combo.addItem("VOICEVOX: 小夜/SAYO", 46)
+        self._voice_combo.addItem("VOICEVOX: Voidoll", 89)
+        self._voice_combo.addItem("VOICEVOX: 離途", 99)
+        self._voice_combo.setCurrentIndex(0)
+        self._voice_combo.setEnabled(False)
+        self._voice_combo.currentIndexChanged.connect(self._handle_voice_selection)
+        self._voice_combo.setMinimumWidth(180)
+
+        controls_layout = QVBoxLayout()
+        controls_layout.setSpacing(6)
+        controls_layout.addWidget(self._record_button)
+        controls_layout.addWidget(self._send_button)
+        controls_layout.addWidget(self._voice_toggle)
+        controls_layout.addWidget(self._voice_combo)
+
         input_row = QHBoxLayout()
         input_row.addWidget(self._input, stretch=1)
-        input_row.addWidget(self._record_button)
-        input_row.addWidget(self._send_button)
+        input_row.addLayout(controls_layout)
         input_row.setSpacing(8)
 
         layout = QVBoxLayout()
@@ -189,6 +212,20 @@ class ConversationWidget(QWidget):
             return
         self._record_button.setEnabled(enabled)
 
+    def set_voice_enabled(self, enabled: bool) -> None:
+        self._voice_toggle.blockSignals(True)
+        self._voice_toggle.setChecked(enabled)
+        self._voice_toggle.blockSignals(False)
+        self._voice_combo.setEnabled(enabled)
+
+    def set_voice_speaker_id(self, speaker_id: int) -> None:
+        index = self._voice_combo.findData(speaker_id)
+        if index < 0:
+            return
+        self._voice_combo.blockSignals(True)
+        self._voice_combo.setCurrentIndex(index)
+        self._voice_combo.blockSignals(False)
+
     def set_status_text(self, text: str) -> None:
         self._status_label.setText(text)
 
@@ -213,6 +250,15 @@ class ConversationWidget(QWidget):
 
     def _handle_record_button(self) -> None:
         self.record_button_clicked.emit()
+
+    def _handle_voice_toggle(self, checked: bool) -> None:
+        self._voice_combo.setEnabled(checked)
+        self.voice_enabled_changed.emit(checked)
+
+    def _handle_voice_selection(self) -> None:
+        speaker_id = self._voice_combo.currentData()
+        if isinstance(speaker_id, int):
+            self.voice_speaker_changed.emit(speaker_id)
 
     def _render_messages(self, messages: Iterable[ChatMessage]) -> None:
         self._transcript.clear()

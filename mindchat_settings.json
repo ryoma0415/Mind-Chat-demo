@@ -1,0 +1,40 @@
+{
+  "app": {
+    "default_mode_key": "plain_chat"
+  },
+  "llm": {
+    "model_path": null,
+    "max_context_tokens": 4096,
+    "max_response_tokens": 512,
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "gpu_layers": 0,
+    "threads": null
+  },
+  "history": {
+    "max_conversations": 60,
+    "max_favorites": 50
+  },
+  "speech": {
+    "model_path": null,
+    "preprocess": {
+      "enabled": false,
+      "force_mono": false,
+      "resample": false,
+      "target_sample_rate": 16000,
+      "convert_format": false
+    },
+    "postprocess": {
+      "normalize_spaces": true,
+      "append_punctuation": true,
+      "use_timing": true,
+      "sentence_gap_sec": 0.4
+    }
+  },
+  "embedding": {
+    "model_path": null
+  },
+  "voicevox": {
+    "base_url": "http://127.0.0.1:50021"
+  }
+}

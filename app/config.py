@@ -5,6 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
+from .settings import (
+    get_float_setting,
+    get_int_setting,
+    get_str_setting,
+    load_settings,
+    resolve_path_setting,
+)
+
 
 @dataclass(frozen=True)
 class AppPaths:
@@ -30,10 +38,7 @@ class AppPaths:
         return path
 
     def resolve_model_path(self, default_filename: str) -> Path:
-        # 環境変数でパスを上書きできるようにしつつ、デフォルトは model ディレクトリ配下を見る
-        override = os.getenv("MINDCHAT_MODEL_PATH")
-        if override:
-            return Path(override).expanduser().resolve()
+        # デフォルトは model ディレクトリ配下を見る
         return (self.model_dir / default_filename).resolve()
 
 
@@ -90,12 +95,69 @@ class AppConfig:
     threads: int | None = None
     default_mode_key: str = "plain_chat"
     modes: tuple[ConversationMode, ...] = field(init=False)
+    settings: dict = field(default_factory=dict, init=False, repr=False)
 
     @property
     def model_path(self) -> Path:
+        env_override = os.getenv("MINDCHAT_MODEL_PATH")
+        if env_override:
+            return Path(env_override).expanduser().resolve()
+        override = resolve_path_setting(self.settings, "llm.model_path", self.paths.root)
+        if override:
+            return override
         return self.paths.resolve_model_path(self.model_filename)
 
     def __post_init__(self) -> None:
+        settings = load_settings(self.paths.root)
+        object.__setattr__(self, "settings", settings)
+        object.__setattr__(
+            self,
+            "max_conversations",
+            get_int_setting(settings, "history.max_conversations", self.max_conversations)
+            or self.max_conversations,
+        )
+        object.__setattr__(
+            self,
+            "max_favorites",
+            get_int_setting(settings, "history.max_favorites", self.max_favorites) or self.max_favorites,
+        )
+        object.__setattr__(
+            self,
+            "max_context_tokens",
+            get_int_setting(settings, "llm.max_context_tokens", self.max_context_tokens)
+            or self.max_context_tokens,
+        )
+        object.__setattr__(
+            self,
+            "max_response_tokens",
+            get_int_setting(settings, "llm.max_response_tokens", self.max_response_tokens)
+            or self.max_response_tokens,
+        )
+        object.__setattr__(
+            self,
+            "temperature",
+            get_float_setting(settings, "llm.temperature", self.temperature),
+        )
+        object.__setattr__(
+            self,
+            "top_p",
+            get_float_setting(settings, "llm.top_p", self.top_p),
+        )
+        object.__setattr__(
+            self,
+            "gpu_layers",
+            get_int_setting(settings, "llm.gpu_layers", self.gpu_layers) or self.gpu_layers,
+        )
+        object.__setattr__(
+            self,
+            "threads",
+            get_int_setting(settings, "llm.threads", self.threads),
+        )
+        object.__setattr__(
+            self,
+            "default_mode_key",
+            get_str_setting(settings, "app.default_mode_key", self.default_mode_key),
+        )
         # dataclass の初期化完了後にモード一覧を確定させる
         object.__setattr__(self, "modes", self._build_modes())
 
