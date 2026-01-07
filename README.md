@@ -41,9 +41,13 @@ Voskモデルダウンロードページ: https://alphacephei.com/vosk/models
 ## VOICEVOX音声出力機能のセットアップ手順
 Dockerをインストールする  
 Dockerインストールページ: https://www.docker.com/ja-jp/get-started/  
-ターミナルやPowershellで以下を実行
+ターミナルやPowershellで以下を実行（初回のみ: コンテナ作成）
 ```bash
 docker run -d --name voicevox -p 50021:50021 --restart unless-stopped voicevox/voicevox_engine:cpu-latest
+```
+2回目以降は以下で起動できます（削除した場合は上の `docker run` を再実行）
+```bash
+docker start voicevox
 ```
 停止する場合は以下のコマンド
 ```bash
